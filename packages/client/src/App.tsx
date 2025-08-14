@@ -4,12 +4,12 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "./components/ui/toaster";
 import { TooltipProvider } from "./components/ui/tooltip";
 import NotFound from "./pages/not-found";
-import BeautifulDashboard from "./pages/beautiful-dashboard";
+import NPSDashboard from "./pages/beautiful-dashboard";
 
 function Router() {
   return (
     <Switch>
-      <Route path="/" component={BeautifulDashboard} />
+      <Route path="/" component={NPSDashboard} />
       <Route component={NotFound} />
     </Switch>
   );

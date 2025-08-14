@@ -54,6 +54,7 @@ interface NpsResponse {
   processed: boolean;
   topicMentions?: TopicMention[];
   topics?: Topic[];
+  visitorId?: string;
 }
 
 interface NPSStats {
@@ -77,6 +78,38 @@ interface TopicData {
   sentiment: string;
   confidence: number;
   keywords: string[];
+}
+
+interface SyncState {
+  csvUploadDate?: string;
+  csvResponseCount?: number;
+  pendoResponseCount?: number;
+}
+
+interface ThemeDistribution {
+  theme: string;
+  mentions: number;
+  sentiment: string | {
+    positive: number;
+    neutral: number;
+    negative: number;
+  };
+  responseGroups?: {
+    promoters: number;
+    passives: number;
+    detractors: number;
+  };
+}
+
+interface AIAnalysisResult {
+  sentiment: string;
+  confidence: number;
+}
+
+interface BatchAnalysisResult {
+  sentiment: { sentiment: string; confidence: number };
+  topics: any[];
+  language: string;
 }
 
 const NPSDashboard = () => {
@@ -132,14 +165,14 @@ const NPSDashboard = () => {
   });
 
   // Fetch theme distribution
-  const { data: themeDistribution = [], isLoading: themeLoading } = useQuery({
+  const { data: themeDistribution = [], isLoading: themeLoading } = useQuery<ThemeDistribution[]>({
     queryKey: ['/api/theme-distribution'],
     refetchOnWindowFocus: false,
     staleTime: 5000,
   });
 
   // Fetch sync state
-  const { data: syncState } = useQuery({
+  const { data: syncState } = useQuery<SyncState>({
     queryKey: ['/api/sync-state'],
   });
 
@@ -358,7 +391,7 @@ const NPSDashboard = () => {
   }, []);
 
   // Batch AI analysis using the new efficient endpoint
-  const analyzeBatchWithAI = useCallback(async (comments: Array<{ comment: string; rating: number }>) => {
+  const analyzeBatchWithAI = useCallback(async (comments: Array<{ comment: string; rating: number }>): Promise<BatchAnalysisResult[]> => {
     try {
       const response = await fetch('/api/analyze-batch', {
         method: 'POST',
@@ -375,7 +408,7 @@ const NPSDashboard = () => {
     } catch (error) {
       console.error('Batch AI analysis error:', error);
       // Fallback to individual analysis
-      const results = [];
+      const results: BatchAnalysisResult[] = [];
       for (const { comment, rating } of comments) {
         const result = await analyzeWithAI(comment, rating);
         results.push({
@@ -889,12 +922,14 @@ const NPSDashboard = () => {
             const parts = dateStr.split(' ')[0].split('/'); // Remove time part if present
             if (parts.length === 3) {
               // Parse as DD/MM/YYYY
-              const day = parseInt(parts[0]).toString().padStart(2, '0');
-              const month = parseInt(parts[1]).toString().padStart(2, '0'); 
+              const dayNum = parseInt(parts[0]);
+              const monthNum = parseInt(parts[1]);
               const year = parts[2];
               
               // Validate the parsed date
-              if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+              if (dayNum >= 1 && dayNum <= 31 && monthNum >= 1 && monthNum <= 12) {
+                const day = dayNum.toString().padStart(2, '0');
+                const month = monthNum.toString().padStart(2, '0');
                 properDate = `${year}-${month}-${day}`;
                 console.log(`📅 Successfully converted: ${dateStr} → ${properDate}`);
               } else {
@@ -1661,12 +1696,12 @@ const NPSDashboard = () => {
                           </p>
                           {syncState && (
                             <div className="mt-2 space-y-1">
-                              {syncState.csvResponseCount > 0 && (
+                              {(syncState.csvResponseCount ?? 0) > 0 && (
                                 <p className="text-xs text-neutral-500">
                                   CSV data: {syncState.csvResponseCount} responses
                                 </p>
                               )}
-                              {syncState.pendoResponseCount > 0 && (
+                              {(syncState.pendoResponseCount ?? 0) > 0 && (
                                 <p className="text-xs text-neutral-500">
                                   Pendo data: {syncState.pendoResponseCount} responses
                                 </p>
@@ -1760,33 +1795,37 @@ const NPSDashboard = () => {
                           </div>
                           
                           {/* Response Group Breakdown */}
-                          <div className="grid grid-cols-3 gap-2 mt-3">
-                            <div className="text-center p-2 bg-green-50 rounded">
-                              <div className="text-xs text-green-700 font-medium">Promoters</div>
-                              <div className="text-sm font-semibold text-green-800">{topic.responseGroups.promoters}</div>
+                          {topic.responseGroups && (
+                            <div className="grid grid-cols-3 gap-2 mt-3">
+                              <div className="text-center p-2 bg-green-50 rounded">
+                                <div className="text-xs text-green-700 font-medium">Promoters</div>
+                                <div className="text-sm font-semibold text-green-800">{topic.responseGroups.promoters}</div>
+                              </div>
+                              <div className="text-center p-2 bg-yellow-50 rounded">
+                                <div className="text-xs text-yellow-700 font-medium">Passives</div>
+                                <div className="text-sm font-semibold text-yellow-800">{topic.responseGroups.passives}</div>
+                              </div>
+                              <div className="text-center p-2 bg-red-50 rounded">
+                                <div className="text-xs text-red-700 font-medium">Detractors</div>
+                                <div className="text-sm font-semibold text-red-800">{topic.responseGroups.detractors}</div>
+                              </div>
                             </div>
-                            <div className="text-center p-2 bg-yellow-50 rounded">
-                              <div className="text-xs text-yellow-700 font-medium">Passives</div>
-                              <div className="text-sm font-semibold text-yellow-800">{topic.responseGroups.passives}</div>
-                            </div>
-                            <div className="text-center p-2 bg-red-50 rounded">
-                              <div className="text-xs text-red-700 font-medium">Detractors</div>
-                              <div className="text-sm font-semibold text-red-800">{topic.responseGroups.detractors}</div>
-                            </div>
-                          </div>
+                          )}
                           
                           {/* Sentiment Breakdown */}
-                          <div className="flex gap-2 mt-3">
-                            <Badge variant="secondary" className="bg-green-100 text-green-800">
-                              {topic.sentiment.positive} positive
-                            </Badge>
-                            <Badge variant="secondary" className="bg-yellow-100 text-yellow-800">
-                              {topic.sentiment.neutral} neutral
-                            </Badge>
-                            <Badge variant="secondary" className="bg-red-100 text-red-800">
-                              {topic.sentiment.negative} negative
-                            </Badge>
-                          </div>
+                          {typeof topic.sentiment === 'object' && topic.sentiment && 'positive' in topic.sentiment && (
+                            <div className="flex gap-2 mt-3">
+                              <Badge variant="secondary" className="bg-green-100 text-green-800">
+                                {topic.sentiment.positive} positive
+                              </Badge>
+                              <Badge variant="secondary" className="bg-yellow-100 text-yellow-800">
+                                {topic.sentiment.neutral} neutral
+                              </Badge>
+                              <Badge variant="secondary" className="bg-red-100 text-red-800">
+                                {topic.sentiment.negative} negative
+                              </Badge>
+                            </div>
+                          )}
                         </div>
                       ))
                     ) : (
