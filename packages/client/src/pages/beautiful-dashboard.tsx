@@ -393,9 +393,9 @@ const NPSDashboard = () => {
       if (filters.search.trim()) {
         const searchLower = filters.search.toLowerCase();
         const matchesSearch = 
-          response.comment.toLowerCase().includes(searchLower) ||
-          response.customer.toLowerCase().includes(searchLower) ||
-          response.responseGroup.toLowerCase().includes(searchLower);
+          (response.comment || '').toLowerCase().includes(searchLower) ||
+          (response.customer || '').toLowerCase().includes(searchLower) ||
+          (response.responseGroup || '').toLowerCase().includes(searchLower);
         if (!matchesSearch) return false;
       }
 
@@ -977,6 +977,7 @@ const NPSDashboard = () => {
   };
 
   const getResponseGroupColor = (group: string) => {
+    if (!group) return 'hsl(240, 5%, 64.9%)';
     switch (group.toLowerCase()) {
       case 'promoter': return 'hsl(142, 71%, 45%)';
       case 'passive': return 'hsl(43, 96%, 56%)';
