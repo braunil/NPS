@@ -1,0 +1,1511 @@
+import type { Express } from "express";
+import { createServer, type Server } from "http";
+// import { LocalDB } from './local-db';
+import { ollamaLLM } from './ollama-llm';
+import * as XLSX from 'xlsx';
+import multer from 'multer';
+import { storage } from './storage';
+import { aiTracker } from './ai-processing-status';
+import { z } from 'zod';
+import { insertNpsResponseSchema } from '../shared/schema';
+import { LocalDB } from './local-db';
+import { npsResponses, topicMentions } from '../shared/schema';
+import { analyzeBatchComments, analyzeComment } from './analysis';
+import { pendoClient, handlePollDiscovery } from './pendo-stub';
+import * as cron from 'node-cron';
+
+// Configure multer for file uploads
+const upload = multer({ storage: multer.memoryStorage() });
+
+export async function registerRoutes(app: Express): Promise<Server> {
+  // Add global request logging
+  app.use('/api/*', (req, res, next) => {
+    console.log(`🌐 API Request: ${req.method} ${req.path} - Body size: ${JSON.stringify(req.body).length}`);
+    next();
+  });
+
+  // NPS Responses endpoint
+  app.get('/api/nps-responses', async (req, res) => {
+    try {
+      const { startDate, endDate, sentiment, platform, language, topic } = req.query;
+      const responses = LocalDB.getResponses({
+        startDate: startDate as string,
+        endDate: endDate as string,
+        sentiment: sentiment as string,
+        platform: platform as string,
+        language: language as string,
+        topic: topic as string
+      });
+      res.json(responses);
+    } catch (error) {
+      console.error('❌ Error fetching responses:', error);
+      res.status(500).json({ error: 'Failed to fetch responses' });
+    }
+  });
+
+  // NPS Statistics endpoint
+  app.get('/api/nps-stats', async (req, res) => {
+    try {
+      const { startDate, endDate, sentiment, platform, language } = req.query;
+      const stats = LocalDB.getNPSStats({
+        startDate: startDate as string,
+        endDate: endDate as string,
+        sentiment: sentiment as string,
+        platform: platform as string,
+        language: language as string
+      });
+      res.json(stats);
+    } catch (error) {
+      console.error('❌ Error calculating NPS stats:', error);
+      res.status(500).json({ error: 'Failed to calculate NPS statistics' });
+    }
+  });
+
+  // Sentiment Distribution endpoint
+  app.get('/api/sentiment-distribution', async (req, res) => {
+    try {
+      const { startDate, endDate } = req.query;
+      const distribution = LocalDB.getSentimentDistribution({
+        startDate: startDate as string,
+        endDate: endDate as string
+      });
+      res.json(distribution);
+    } catch (error) {
+      console.error('❌ Error fetching sentiment distribution:', error);
+      res.status(500).json({ error: 'Failed to fetch sentiment distribution' });
+    }
+  });
+
+  // Topic Distribution endpoint
+  app.get('/api/topic-distribution', async (req, res) => {
+    try {
+      const { startDate, endDate } = req.query;
+      const distribution = LocalDB.getTopicDistribution({
+        startDate: startDate as string,
+        endDate: endDate as string
+      });
+      res.json(distribution);
+    } catch (error) {
+      console.error('❌ Error fetching topic distribution:', error);
+      res.status(500).json({ error: 'Failed to fetch topic distribution' });
+    }
+  });
+
+  // Single Comment Analysis endpoint
+  app.post('/api/analyze-comment', async (req, res) => {
+    try {
+      const { comment, language = 'en' } = req.body;
+      if (!comment) {
+        return res.status(400).json({ error: 'Comment is required' });
+      }
+      const analysis = await ollamaLLM.analyzeComment(comment, language);
+      res.json(analysis);
+    } catch (error) {
+      console.error('❌ Error analyzing comment:', error);
+      res.status(500).json({ error: 'Failed to analyze comment' });
+    }
+  });
+
+  // CSV/Excel Upload endpoint
+  app.post('/api/upload', upload.single('file'), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+      }
+      // Parse CSV/Excel file
+      const fileBuffer = req.file.buffer;
+      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+      const sheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[sheetName];
+      const jsonData = XLSX.utils.sheet_to_json(worksheet);
+      let processed = 0;
+      for (const row of jsonData as any[]) {
+        try {
+          // Insert each row as NPS response (add your mapping logic as needed)
+          LocalDB.insertResponse({
+            rating: row.rating,
+            comment: row.comment,
+            language: row.language,
+            date: row.date,
+            customer_id: row.customer_id,
+            visitor_id: row.visitor_id,
+            platform: row.platform,
+            sentiment: row.sentiment,
+            sentiment_confidence: row.sentiment_confidence
+          });
+          processed++;
+        } catch (e) { /* skip row on error */ }
+      }
+      LocalDB.logSync('csv_upload', processed, 'success');
+      res.json({ message: 'File processed successfully', total: jsonData.length });
+    } catch (error) {
+      console.error('❌ Error processing file:', error);
+      res.status(500).json({ error: 'Failed to process file' });
+    }
+  });
+
+  // AI Status endpoint
+  app.get('/api/ai-status', async (req, res) => {
+    try {
+      const isConnected = await ollamaLLM.checkConnection();
+      res.json({ connected: isConnected });
+    } catch (error) {
+      res.json({ connected: false });
+    }
+  });
+
+  // Backup endpoint
+  app.post('/api/backup', async (req, res) => {
+    try {
+      const backupFile = LocalDB.backupToCSV();
+      res.json({ backupFile });
+    } catch (error) {
+      console.error('❌ Backup failed:', error);
+      res.status(500).json({ error: 'Failed to create backup' });
+    }
+  });
+
+  // Create multiple NPS responses (for bulk upload)
+  app.post("/api/nps-responses/bulk", async (req, res) => {
+    try {
+      const responses = z.array(insertNpsResponseSchema).parse(req.body);
+      const createdResponses = await storage.createManyNpsResponses(responses);
+      res.json(createdResponses);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        res.status(400).json({ error: "Invalid request data", details: error.issues });
+      } else {
+        res.status(500).json({ error: "Failed to create NPS responses" });
+      }
+    }
+  });
+
+  // Upload CSV data (one-time historical data)
+  app.post("/api/upload-csv", async (req, res) => {
+    console.log('🚀 CSV UPLOAD ROUTE CALLED!');
+    console.log('📦 Request body keys:', Object.keys(req.body));
+    console.log('📏 Request body size:', JSON.stringify(req.body).length);
+    try {
+      const { responses } = req.body;
+      console.log(`📋 Received upload request with ${responses ? responses.length : 'null'} responses`);
+      
+      if (!Array.isArray(responses)) {
+        console.log('❌ Invalid request: responses is not an array');
+        return res.status(400).json({ error: "Responses must be an array" });
+      }
+      
+      console.log(`✅ Valid array received with ${responses.length} items`);
+      console.log(`📊 Sample response data:`, JSON.stringify(responses[0], null, 2));
+      
+      // Get current sync state
+      let syncState = await storage.getDataSyncState();
+      if (!syncState) {
+        syncState = await storage.updateDataSyncState({
+          key: 'main',
+          csvUploadDate: null,
+          csvResponseCount: 0,
+          lastPendoSyncDate: null,
+          pendoResponseCount: 0,
+          totalResponseCount: 0
+        });
+      }
+      
+      // TEMPORARILY DISABLED: Allow re-upload for debugging
+      // if (syncState.csvUploadDate) {
+      //   return res.status(400).json({ 
+      //     error: "CSV data has already been uploaded. This is a one-time operation.",
+      //     uploadDate: syncState.csvUploadDate 
+      //   });
+      // }
+      
+      console.log(`Processing CSV upload with ${responses.length} responses...`);
+      
+      // ULTRA-FAST: Use array map for instant processing without loops
+      console.log(`🚀 Fast-processing all ${responses.length} responses...`);
+      
+      // STEP 1: Clean and validate data structure
+      const processedResponses = responses.map((response, index) => {
+        // Parse visitor ID properly - check multiple possible field names
+        let properVisitorId = null;
+        let properCustomer = '';
+        
+        // Try multiple field names for visitor ID
+        const visitorFields = [(response as any).visitorId, response.visitor_id, response.visiterId, response.userId, response.user_id];
+        for (const field of visitorFields) {
+          if (field && typeof field === 'string' && field.startsWith('_PENDO_')) {
+            properVisitorId = field;
+            properCustomer = field;
+            break;
+          }
+        }
+        
+        // If no valid Pendo visitor ID found, check customer field
+        if (!properVisitorId && (response as any).customer && (response as any).customer.startsWith('_PENDO_')) {
+          properVisitorId = (response as any).customer;
+          properCustomer = (response as any).customer;
+        }
+        
+        // Final fallback
+        if (!properVisitorId) {
+          properCustomer = (response as any).customer || `visitor_${index}`;
+        }
+        
+        // Validate and clean language field
+        let properLanguage = 'unknown';
+        if (response.language && typeof response.language === 'string') {
+          const lang = response.language.toLowerCase();
+          // Extract base language code (de-CH -> de, fr-FR -> fr, etc.)
+          if (lang.startsWith('de')) properLanguage = 'de';
+          else if (lang.startsWith('fr')) properLanguage = 'fr';
+          else if (lang.startsWith('it')) properLanguage = 'it';
+          else if (lang.startsWith('en')) properLanguage = 'en';
+          else properLanguage = 'unknown'; // Will be detected by AI
+        }
+        
+        // Ensure date is properly formatted for database
+        let properDate = new Date().toISOString();
+        if (response.date && typeof response.date === 'string') {
+          try {
+            // Handle various date formats
+            let dateStr = response.date.trim();
+            
+            // Convert DD/MM/YYYY HH:MM to proper format (European format)
+            if (dateStr.includes('/') && dateStr.includes(' ')) {
+              const [datePart, timePart] = dateStr.split(' ');
+              const [day, month, year] = datePart.split('/');
+              dateStr = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${timePart || '12:00'}:00.000Z`;
+              console.log(`📅 Server converted: ${response.date} → ${dateStr}`);
+            }
+            // Convert DD/MM/YYYY to proper format (European format)
+            else if (dateStr.includes('/')) {
+              const [day, month, year] = dateStr.split('/');
+              dateStr = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T12:00:00.000Z`;
+              console.log(`📅 Server converted: ${response.date} → ${dateStr}`);
+            }
+            // Convert YYYY-MM-DD to proper ISO format
+            else if (dateStr.includes('-') && !dateStr.includes('T')) {
+              dateStr = `${dateStr}T12:00:00.000Z`;
+            }
+            
+            const parsedDate = new Date(dateStr);
+            if (!isNaN(parsedDate.getTime())) {
+              properDate = parsedDate.toISOString();
+            }
+          } catch (dateError) {
+            console.log(`⚠️ Date parsing failed for "${response.date}", using current date`);
+            properDate = new Date().toISOString();
+          }
+        }
+        
+        return {
+          rating: parseInt(response.rating) || 0,
+          comment: (response.comment || '').toString().trim(),
+          date: properDate,
+          customer: properCustomer,
+          visitorId: properVisitorId,
+          responseGroup: (response as any).responseGroup || (
+            parseInt(response.rating) >= 9 ? 'Promoter' :
+            parseInt(response.rating) >= 7 ? 'Passive' : 'Detractor'
+          ),
+          sentiment: 'neutral', // Will be enhanced by Gemini AI
+          sentimentConfidence: 0.3,
+          language: properLanguage, // Will be enhanced by Gemini AI for 'unknown'
+          processed: false
+        };
+      });
+      
+      console.log(`✅ Cleaned and validated ${processedResponses.length} responses`);
+      console.log(`📋 Sample processed data:`, {
+        visitorId: processedResponses[0]?.visitorId,
+        language: processedResponses[0]?.language,
+        customer: processedResponses[0]?.customer,
+        hasComment: !!processedResponses[0]?.comment
+      });
+      
+      if (processedResponses.length === 0) {
+        console.log('❌ No responses to save after processing!');
+        return res.status(400).json({ error: "No valid responses to save" });
+      }
+      
+      // STEP 2: Save data in batches to prevent stack overflow
+      console.log(`💾 Saving ${processedResponses.length} responses to database in batches...`);
+      
+      try {
+        console.log(`🚀 Starting database save operation...`);
+        const savedResponses: any[] = [];
+        const batchSize = 1000; // Process in smaller batches
+        
+        for (let i = 0; i < processedResponses.length; i += batchSize) {
+          const batch = processedResponses.slice(i, i + batchSize);
+          console.log(`💾 Saving batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(processedResponses.length/batchSize)} (${batch.length} responses)...`);
+          
+          const batchResults = await storage.createManyNpsResponses(batch);
+          savedResponses.push(...batchResults);
+          
+          console.log(`✅ Saved batch ${Math.floor(i/batchSize) + 1} - ${batchResults.length} responses`);
+        }
+        console.log(`✅ Successfully saved ${savedResponses.length}/${processedResponses.length} responses to database!`);
+        
+        // Skip sync state update for now - focus on data upload
+        console.log('📈 Skipping sync state update to avoid timestamp issues');
+        
+        
+        // Return success immediately - AI analysis will happen in background
+        const responsesWithComments = savedResponses.filter(r => r.comment && r.comment.trim().length > 0);
+        
+        res.status(200).json({
+          success: true,
+          message: `Successfully uploaded ${savedResponses.length} responses`,
+          count: savedResponses.length,
+          processed: savedResponses.length,
+          failed: processedResponses.length - savedResponses.length,
+          aiProcessing: responsesWithComments.length > 0,
+          aiPendingCount: responsesWithComments.length
+        });
+        
+        // Start AI enhancement in background (non-blocking)
+        console.log(`🤖 Starting AI enhancement for ${savedResponses.length} responses in background...`);
+        
+        if (responsesWithComments.length > 0) {
+          // Start AI processing tracking
+          aiTracker.startProcessing(responsesWithComments.length);
+          
+          // Process in background without blocking
+          setImmediate(async () => {
+            try {
+              // Use SIMPLE individual processing for reliability - batch is too complex
+              console.log(`🚀 Using SIMPLE individual processing for ${responsesWithComments.length} responses...`);
+              
+              for (const response of responsesWithComments) {
+                try {
+                  // Skip empty comments - no sentiment analysis needed
+                  if (!response.comment || response.comment.trim().length === 0 || response.comment.trim() === 'No comment') {
+                    console.log(`⏭️ Skipping empty comment for response ${response.id}`);
+                    await storage.updateNpsResponse(response.id, {
+                      sentiment: '',
+                      sentimentConfidence: 0,
+                      language: response.language || 'en',
+                      processed: true
+                    });
+                    aiTracker.incrementProcessed();
+                    continue;
+                  }
+                  
+                  // Use FAST rule-based sentiment analysis
+                  let sentiment = 'neutral';
+                  let confidence = 0.6;
+                  
+                  // Smart sentiment based on rating + keywords
+                  if (response.rating >= 9) {
+                    sentiment = 'positive';
+                    confidence = 0.8;
+                  } else if (response.rating <= 4) {
+                    sentiment = 'negative';
+                    confidence = 0.8;
+                  } else {
+                    // Check for strong keywords in comment
+                    const comment = response.comment.toLowerCase();
+                    const negativeWords = ['schlecht', 'teuer', 'gering', 'ungenügend', 'fehlt', 'problem', 'ärgerlich', 'frustrierend', 'mauvais', 'cher', 'problème'];
+                    const positiveWords = ['super', 'toll', 'gut', 'perfekt', 'einfach', 'great', 'excellent', 'amazing', 'merci', 'danke', 'génial', 'fantastique', 'bravo'];
+                    
+                    if (negativeWords.some(word => comment.includes(word))) {
+                      sentiment = 'negative';
+                      confidence = 0.7;
+                    } else if (positiveWords.some(word => comment.includes(word))) {
+                      sentiment = 'positive';
+                      confidence = 0.7;
+                    }
+                  }
+                  
+                  // Fast topic detection
+                  const topics = [];
+                  const comment = response.comment.toLowerCase();
+                  
+                  if (comment.includes('einfach') || comment.includes('simple') || comment.includes('easy') || comment.includes('intuitive')) {
+                    topics.push('Ease of Use');
+                  }
+                  if (comment.includes('invest') || comment.includes('aktien') || comment.includes('etf') || comment.includes('crypto')) {
+                    topics.push('Investment Features');
+                  }
+                  if (comment.includes('auswahl') && comment.includes('gering')) {
+                    topics.push('Limited Investments');
+                  }
+                  if (comment.includes('teuer') || comment.includes('expensive') || comment.includes('fees')) {
+                    topics.push('High Trading Fees');
+                  }
+                  if (comment.includes('app') || comment.includes('bug') || comment.includes('performance')) {
+                    topics.push('App Performance');
+                  }
+                  if (comment.includes('support') || comment.includes('customer') || comment.includes('help')) {
+                    topics.push('Customer Support');
+                  }
+                  
+                  // Add Compliment topic for positive feedback without specific banking topics
+                  if (sentiment === 'positive' && topics.length === 0) {
+                    if (comment.includes('super') || comment.includes('merci') || comment.includes('danke') || comment.includes('toll') || comment.includes('gut') || comment.includes('great') || comment.includes('excellent') || comment.includes('bravo') || comment.includes('génial') || comment.includes('fantastique')) {
+                      topics.push('Compliment');
+                    }
+                  }
+                  
+                  console.log(`⚡ Fast processing response ${response.id}: ${sentiment} (${Math.round(confidence * 100)}%) with ${topics.length} topics`);
+                  
+                  // Update database with results
+                  await storage.updateNpsResponse(response.id, {
+                    sentiment: sentiment,
+                    sentimentConfidence: confidence,
+                    language: response.language || 'en',
+                    processed: true
+                  });
+                  
+                  // Add topic mentions
+                  for (const topicName of topics) {
+                    await storage.createTopicMention({
+                      responseId: response.id,
+                      topicName: topicName,
+                      mentions: 1,
+                      sentiment: sentiment,
+                      confidence: confidence
+                    });
+                  }
+                  
+                  // Update progress
+                  aiTracker.incrementProcessed();
+                  
+                } catch (responseError) {
+                  console.error(`❌ Failed to process response ${response.id}:`, responseError);
+                }
+              }
+              
+              // Mark processing as complete
+              aiTracker.completeProcessing();
+              
+            } catch (aiError) {
+              console.error('❌ AI processing failed:', aiError);
+              aiTracker.completeProcessing();
+            }
+          });
+        } else {
+          console.log('📝 No responses with comments found, skipping AI processing');
+        }
+        
+      } catch (saveError) {
+        console.error('❌ Database save failed:', saveError);
+        return res.status(500).json({
+          error: "Database save failed",
+          details: (saveError as Error).message,
+          processed: 0,
+          failed: processedResponses.length
+        });
+      }
+    } catch (error) {
+      console.error('Failed to process CSV upload:', error);
+      res.status(500).json({
+        error: "Failed to process upload",
+        details: (error as Error).message
+      });
+    }
+  });
+
+  // Delete all NPS responses
+  app.delete("/api/nps-responses", async (req, res) => {
+    try {
+      // Direct SQL deletion to ensure it works
+      // await db.delete(topicMentions); // Disabled - using LocalDB
+      // await db.delete(npsResponses); // Disabled - using LocalDB
+      console.log('✅ Successfully deleted all data from database');
+      
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to delete NPS responses" });
+    }
+  });
+
+  // Get NPS statistics
+  // Get AI processing status
+  app.get("/api/ai-status", async (req, res) => {
+    try {
+      const status = aiTracker.getStatus();
+      res.json({
+        ...status,
+        progress: aiTracker.getProgress(),
+        isProcessing: aiTracker.isProcessing()
+      });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to get AI status" });
+    }
+  });
+
+  app.get("/api/nps-stats", async (req, res) => {
+    try {
+      const responses = await storage.getAllNpsResponses();
+      const total = responses.length;
+      
+      if (total === 0) {
+        return res.json({
+          npsScore: 0,
+          segments: { promoters: 0, passives: 0, detractors: 0 },
+          sentimentData: [],
+          total: 0
+        });
+      }
+
+      // Calculate NPS segments
+      let promoters = 0;
+      let passives = 0;
+      let detractors = 0;
+
+      responses.forEach(response => {
+        if (response.rating >= 9) promoters++;
+        else if (response.rating >= 7) passives++;
+        else detractors++;
+      });
+
+      const promotersPercentage = (promoters / total) * 100;
+      const passivesPercentage = (passives / total) * 100;
+      const detractorsPercentage = (detractors / total) * 100;
+
+      const npsScore = promotersPercentage - detractorsPercentage;
+
+      // Calculate sentiment data (EXCLUDING N/A responses from analysis)
+      const validResponses = responses.filter((r: any) => r.sentiment !== 'N/A');
+      const sentimentCounts = validResponses.reduce((acc, response) => {
+        acc[response.sentiment] = (acc[response.sentiment] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+
+      const sentimentData = [
+        { name: 'Positive', value: sentimentCounts.positive || 0, color: '#22c55e' },
+        { name: 'Neutral', value: sentimentCounts.neutral || 0, color: '#6b7280' },
+        { name: 'Negative', value: sentimentCounts.negative || 0, color: '#ef4444' }
+      ].filter(item => item.value > 0); // Only include categories with actual data
+
+      res.json({
+        npsScore,
+        segments: {
+          promoters: promotersPercentage,
+          passives: passivesPercentage,
+          detractors: detractorsPercentage
+        },
+        sentimentData,
+        total,
+        validResponses: validResponses.length,
+        excludedResponses: responses.filter((r: any) => r.sentiment === 'N/A').length,
+        naResponses: responses.filter((r: any) => r.sentiment === 'N/A').length
+      });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to calculate NPS statistics" });
+    }
+  });
+
+  // Weekly NPS trends
+  app.get("/api/nps-trends", async (req, res) => {
+    try {
+      const responses = await storage.getAllNpsResponses();
+      const { period = 'ytd' } = req.query;
+      
+      const now = new Date();
+      let startDate: Date;
+      
+      // Calculate start date based on period
+      switch(period) {
+        case '7d':
+          startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          break;
+        case '30d':
+          startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+          break;
+        case '90d':
+          startDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+          break;
+        case '6m':
+          startDate = new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000);
+          break;
+        case 'ytd':
+          startDate = new Date(now.getFullYear(), 0, 1); // January 1st of current year
+          break;
+        case '1y':
+          startDate = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+          break;
+        case 'all':
+        default:
+          startDate = new Date('2020-01-01'); // Far past date to include all data
+          break;
+      }
+      
+      // Helper function to get week key (Monday-based week)
+      const getWeekKey = (date: Date) => {
+        const d = new Date(date);
+        const day = d.getDay();
+        const diff = d.getDate() - day + (day === 0 ? -6 : 1); // adjust when day is Sunday
+        const monday = new Date(d.setDate(diff));
+        return monday.toISOString().slice(0, 10); // YYYY-MM-DD of Monday
+      };
+      
+      // Group responses by week (Monday to Sunday)
+      const weeklyData = new Map();
+      
+      responses.forEach(response => {
+        const responseDate = new Date(response.date);
+        if (responseDate >= startDate && responseDate <= now) {
+          const weekKey = getWeekKey(responseDate);
+          if (!weeklyData.has(weekKey)) {
+            weeklyData.set(weekKey, { promoters: 0, passives: 0, detractors: 0, total: 0 });
+          }
+          
+          const week = weeklyData.get(weekKey);
+          week.total++;
+          if (response.rating >= 9) week.promoters++;
+          else if (response.rating >= 7) week.passives++;
+          else week.detractors++;
+        }
+      });
+      
+      // Convert to array and calculate NPS scores
+      const trends = Array.from(weeklyData.entries())
+        .map(([week, data]) => ({
+          week,
+          npsScore: data.total > 0 ? ((data.promoters / data.total) * 100) - ((data.detractors / data.total) * 100) : 0,
+          responses: data.total,
+          promoters: data.promoters,
+          passives: data.passives,
+          detractors: data.detractors
+        }))
+        .sort((a, b) => a.week.localeCompare(b.week))
+        .filter(trend => trend.responses > 0); // Only include weeks with responses
+      
+      res.json(trends);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to calculate NPS trends" });
+    }
+  });
+
+  // NPS by platform (Android/iOS)
+  app.get("/api/nps-by-platform", async (req, res) => {
+    try {
+      const responses = await storage.getAllNpsResponses();
+      const platformData = new Map();
+      
+      responses.forEach(response => {
+        const platform = (response as any).platform || 'Unknown';
+        if (!platformData.has(platform)) {
+          platformData.set(platform, { promoters: 0, passives: 0, detractors: 0, total: 0 });
+        }
+        
+        const data = platformData.get(platform);
+        data.total++;
+        if (response.rating >= 9) data.promoters++;
+        else if (response.rating >= 7) data.passives++;
+        else data.detractors++;
+      });
+      
+      const results = Array.from(platformData.entries()).map(([platform, data]) => ({
+        platform,
+        npsScore: ((data.promoters / data.total) * 100) - ((data.detractors / data.total) * 100),
+        responses: data.total
+      }));
+      
+      res.json(results);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to calculate NPS by platform" });
+    }
+  });
+
+  // NPS by language
+  app.get("/api/nps-by-language", async (req, res) => {
+    try {
+      const responses = await storage.getAllNpsResponses();
+      const languageData = new Map();
+      
+      responses.forEach(response => {
+        const language = response.language || 'Unknown';
+        if (!languageData.has(language)) {
+          languageData.set(language, { promoters: 0, passives: 0, detractors: 0, total: 0 });
+        }
+        
+        const data = languageData.get(language);
+        data.total++;
+        if (response.rating >= 9) data.promoters++;
+        else if (response.rating >= 7) data.passives++;
+        else data.detractors++;
+      });
+      
+      const results = Array.from(languageData.entries()).map(([language, data]) => ({
+        language,
+        npsScore: ((data.promoters / data.total) * 100) - ((data.detractors / data.total) * 100),
+        responses: data.total
+      }));
+      
+      res.json(results);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to calculate NPS by language" });
+    }
+  });
+
+  // Theme distribution
+  app.get("/api/theme-distribution", async (req, res) => {
+    try {
+      const topics = await storage.getAllTopicMentions();
+      const themeData = new Map();
+      
+      topics.forEach(topic => {
+        const theme = topic.topicName;
+        
+        // Skip topics without valid sentiment (N/A)
+        if (topic.sentiment === 'N/A') return;
+        
+        if (!themeData.has(theme)) {
+          themeData.set(theme, { 
+            mentions: 0, 
+            totalSentiment: 0, 
+            positiveCount: 0, 
+            neutralCount: 0, 
+            negativeCount: 0,
+            responseGroups: { promoters: 0, passives: 0, detractors: 0 } 
+          });
+        }
+        
+        const data = themeData.get(theme);
+        data.mentions += topic.mentions;
+        
+        // Count sentiment distribution
+        if (topic.sentiment === 'positive') data.positiveCount++;
+        else if (topic.sentiment === 'neutral') data.neutralCount++;
+        else if (topic.sentiment === 'negative') data.negativeCount++;
+        
+        // Associate with response group
+        if (topic.responseGroup) {
+          if (topic.responseGroup === 'Promoter') data.responseGroups.promoters++;
+          else if (topic.responseGroup === 'Passive') data.responseGroups.passives++;
+          else if (topic.responseGroup === 'Detractor') data.responseGroups.detractors++;
+        }
+      });
+      
+      const results = Array.from(themeData.entries()).map(([theme, data]) => ({
+        theme,
+        mentions: data.mentions,
+        sentiment: {
+          positive: data.positiveCount,
+          neutral: data.neutralCount,
+          negative: data.negativeCount
+        },
+        responseGroups: data.responseGroups
+      })).sort((a, b) => b.mentions - a.mentions);
+      
+      res.json(results);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to calculate theme distribution" });
+    }
+  });
+
+  // Sentiment by response group
+  app.get("/api/sentiment-by-group", async (req, res) => {
+    try {
+      const responses = await storage.getAllNpsResponses();
+      const validResponses = responses.filter((r: any) => r.sentiment !== 'N/A');
+      const groupData = new Map();
+      
+      validResponses.forEach(response => {
+        const group = (response as any).responseGroup;
+        if (!groupData.has(group)) {
+          groupData.set(group, { positive: 0, neutral: 0, negative: 0, total: 0 });
+        }
+        
+        const data = groupData.get(group);
+        data.total++;
+        if (response.sentiment === 'positive') data.positive++;
+        else if (response.sentiment === 'neutral') data.neutral++;
+        else if (response.sentiment === 'negative') data.negative++;
+      });
+      
+      const results = Array.from(groupData.entries()).map(([group, data]) => ({
+        group,
+        sentimentScores: {
+          positive: (data.positive / data.total) * 100,
+          neutral: (data.neutral / data.total) * 100,
+          negative: (data.negative / data.total) * 100
+        },
+        totalResponses: data.total
+      }));
+      
+      res.json(results);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to calculate sentiment by response group" });
+    }
+  });
+
+  // Re-analyze responses with confidence 0
+  app.post("/api/reanalyze-responses", async (req, res) => {
+    try {
+      const responses = await storage.getAllNpsResponses();
+      const responsesNeedingAnalysis = responses.filter(
+        r => r.comment && r.comment.trim() && (r.sentimentConfidence === 0 || !r.processed)
+      );
+      
+      if (responsesNeedingAnalysis.length === 0) {
+        return res.json({ message: "No responses need re-analysis", count: 0 });
+      }
+      
+      console.log(`Re-analyzing ${responsesNeedingAnalysis.length} responses with confidence 0...`);
+      
+      const commentsForAnalysis = responsesNeedingAnalysis.map((r: any) => ({
+        comment: r.comment,
+        rating: r.rating
+      }));
+      
+      const analysisResults = await analyzeBatchComments(commentsForAnalysis);
+      
+      // Update responses with new analysis
+      const updatedResponses = [];
+      for (let i = 0; i < responsesNeedingAnalysis.length; i++) {
+        const response = responsesNeedingAnalysis[i];
+        const analysis = analysisResults[i];
+        
+        if (analysis) {
+          const updatedResponse = {
+            ...response,
+            sentiment: analysis.sentiment.sentiment,
+            sentimentConfidence: analysis.sentiment.confidence,
+            language: analysis.language,
+            processed: true
+          };
+          
+          await storage.updateNpsResponse(response.id, updatedResponse);
+          updatedResponses.push(updatedResponse);
+        }
+      }
+      
+      res.json({ 
+        message: `Successfully re-analyzed ${updatedResponses.length} responses`,
+        count: updatedResponses.length,
+        responses: updatedResponses
+      });
+      
+    } catch (error) {
+      console.error('Re-analysis error:', error);
+      res.status(500).json({ error: "Failed to re-analyze responses" });
+    }
+  });
+
+  // Generate test data endpoint
+  app.post("/api/generate-test-data", async (req, res) => {
+    try {
+      const { generateTestData } = await import('./test-data-generator');
+      const testResponses = generateTestData(100);
+      
+      // Clear existing data first
+      await storage.deleteAllNpsResponses();
+      await storage.deleteAllTopicMentions();
+      
+      // Process the test data like CSV upload
+      const processedResponses = [];
+      
+      for (const response of testResponses) {
+        const npsResponse = {
+          rating: response.rating,
+          comment: response.comment || '',
+          language: response.language,
+          date: response.date,
+          customer: (response as any).customer,
+          platform: response.platform,
+          responseGroup: response.rating >= 9 ? 'Promoter' : 
+                        response.rating >= 7 ? 'Passive' : 'Detractor',
+          sentiment: null, // Will be analyzed
+          sentimentConfidence: 0,
+          processed: false,
+          source: 'test'
+        };
+        
+        processedResponses.push(npsResponse);
+      }
+      
+      // Analyze comments with AI
+      const responsesNeedingAnalysis = processedResponses.filter(
+        r => r.comment && r.comment.trim() && r.sentiment === null
+      );
+      
+      console.log(`DEBUG: Found ${processedResponses.length} total responses, ${responsesNeedingAnalysis.length} need AI analysis`);
+      console.log(`DEBUG: First few responses:`, processedResponses.slice(0, 3).map((r: any) => ({ 
+        comment: r.comment?.slice(0, 30), 
+        sentiment: r.sentiment, 
+        hasComment: !!r.comment?.trim() 
+      })));
+      
+      if (responsesNeedingAnalysis.length > 0) {
+        console.log(`Analyzing ${responsesNeedingAnalysis.length} test comments with AI...`);
+        
+        const commentsForAnalysis = responsesNeedingAnalysis.map((r: any) => ({
+          comment: r.comment,
+          rating: r.rating
+        }));
+        
+        const analysisResults = await analyzeBatchComments(commentsForAnalysis);
+        
+        // Apply AI results
+        responsesNeedingAnalysis.forEach((response, index) => {
+          const analysis = analysisResults[index];
+          if (analysis) {
+            (response as any).sentiment = analysis.sentiment.sentiment;
+            response.sentimentConfidence = analysis.sentiment.confidence;
+            response.language = analysis.language;
+            response.processed = true;
+            
+            // Store topics for later processing
+            if (analysis.topics && analysis.topics.length > 0) {
+              (response as any)._topics = analysis.topics;
+            }
+          }
+        });
+      }
+      
+      // Set N/A sentiment for responses without comments
+      processedResponses.forEach(response => {
+        if (!response.comment || !response.comment.trim()) {
+          response.sentiment = 'N/A' as any;
+          response.sentimentConfidence = 0;
+          response.processed = true;
+        }
+        
+        // Only mark single filler words as N/A, not meaningful short comments
+        if (response.comment && response.comment.trim()) {
+          const words = response.comment.trim().split(/\s+/);
+          const fillerWords = ['a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'up', 'about', 'into', 'through', 'during', 'before', 'after', 'above', 'below', 'between', 'among', 'der', 'die', 'das', 'und', 'oder', 'aber', 'in', 'auf', 'zu', 'von', 'mit', 'le', 'la', 'les', 'et', 'ou', 'mais', 'dans', 'sur', 'pour', 'de', 'avec', 'il', 'la', 'le', 'e', 'o', 'ma', 'in', 'su', 'per', 'di', 'con'];
+          
+          if (words.length === 1 && fillerWords.includes(words[0].toLowerCase())) {
+            response.sentiment = 'N/A' as any;
+            response.sentimentConfidence = 0;
+            response.processed = true;
+          }
+        }
+        
+        // Set default sentiment for responses that still don't have one
+        if (response.sentiment === null) {
+          response.sentiment = 'neutral' as any;
+          response.sentimentConfidence = 0.3;
+          response.processed = false;
+        }
+      });
+      
+      // Save all responses
+      const savedResponses = await storage.createManyNpsResponses(processedResponses);
+      
+      // Process topics - ONLY for responses with valid sentiment (not N/A)
+      for (const response of savedResponses) {
+        if ((response as any)._topics && response.sentiment !== 'N/A') {
+          const topicMentions = (response as any)._topics.map((topic: any) => ({
+            responseId: response.id,
+            topicName: topic.category || topic,
+            mentions: 1,
+            sentiment: response.sentiment,
+            confidence: topic.confidence || 0.8,
+            responseGroup: (response as any).responseGroup
+          }));
+          
+          await storage.createManyTopicMentions(topicMentions);
+        }
+      }
+      
+      // Update sync state
+      await storage.updateDataSyncState({
+        csvUploadDate: new Date(),
+        csvResponseCount: savedResponses.length,
+        totalResponseCount: savedResponses.length,
+        lastSyncStatus: 'success'
+      });
+      
+      res.json({
+        success: true,
+        generated: savedResponses.length,
+        message: `Successfully generated ${savedResponses.length} test NPS responses`
+      });
+      
+    } catch (error) {
+      console.error('Test data generation error:', error);
+      res.status(500).json({ error: "Failed to generate test data" });
+    }
+  });
+
+  // AI-powered comment analysis endpoint
+  app.post("/api/analyze-comment", async (req, res) => {
+    try {
+      const { comment, rating } = req.body;
+      
+      if (!comment || typeof comment !== 'string' || typeof rating !== 'number') {
+        return res.status(400).json({ error: "Invalid comment or rating" });
+      }
+
+      const result = await analyzeComment(comment, rating);
+      res.json(result);
+    } catch (error) {
+      console.error('Comment analysis error:', error);
+      res.status(500).json({ error: "Failed to analyze comment" });
+    }
+  });
+
+  app.post("/api/analyze-batch", async (req, res) => {
+    try {
+      const { comments } = req.body;
+      
+      if (!Array.isArray(comments)) {
+        return res.status(400).json({ error: "Comments must be an array" });
+      }
+
+      // Validate each comment in the batch
+      for (const comment of comments) {
+        if (!comment || typeof comment.comment !== 'string' || typeof comment.rating !== 'number') {
+          return res.status(400).json({ error: "Each comment must have 'comment' (string) and 'rating' (number)" });
+        }
+      }
+
+      const results = await analyzeBatchComments(comments);
+      res.json({ results });
+    } catch (error) {
+      console.error('Batch analysis error:', error);
+      res.status(500).json({ error: "Failed to analyze batch" });
+    }
+  });
+
+  // Sync both Android and iOS NPS data
+  app.post("/api/pendo/sync-all", async (req, res) => {
+    try {
+      if (!process.env.PENDO_API_KEY) {
+        return res.status(400).json({ error: "Pendo API key not configured" });
+      }
+
+      // Get current sync state
+      let syncState = await storage.getDataSyncState();
+      if (!syncState) {
+        syncState = await storage.updateDataSyncState({
+          key: 'main',
+          csvUploadDate: null,
+          csvResponseCount: 0,
+          lastPendoSyncDate: null,
+          pendoResponseCount: 0,
+          totalResponseCount: 0
+        });
+      }
+
+      // Update sync status to in progress
+      await storage.updateDataSyncState({
+        lastSyncStatus: 'in_progress',
+        lastSyncError: null
+      });
+
+      const guides = [
+        { name: 'Android', guideId: '1s7Mqs8ny5f_-ynVNJqDQYe1FXA' },
+        { name: 'iOS', guideId: 'm6JZKfqh3D36V5fqFfGd8Rhf3AI' }
+      ];
+
+      let totalImported = 0;
+      const results = [];
+      
+      // Calculate days since last sync (or use 30 days for first sync)
+      let daysSinceLastSync = 30;
+      if (syncState.lastPendoSyncDate) {
+        const lastSyncTime = new Date(syncState.lastPendoSyncDate).getTime();
+        const now = Date.now();
+        daysSinceLastSync = Math.ceil((now - lastSyncTime) / (1000 * 60 * 60 * 24)) + 1; // Add 1 day buffer
+        daysSinceLastSync = Math.min(daysSinceLastSync, 30); // Cap at 30 days
+      }
+
+      for (const guide of guides) {
+        try {
+          console.log(`Processing ${guide.name} guide (${guide.guideId})...`);
+          
+          // Use Guide Events to extract NPS data (last 30 days to avoid overflow)
+          const npsData = await pendoClient.extractNPSFromGuideEvents(guide.guideId, 30);
+
+          if (npsData && npsData.length > 0) {
+            // Process the responses with AI analysis
+            const processedResponses = [];
+            
+            // First, transform all responses and check for duplicates
+            const responsesToProcess = [];
+            const responsesWithoutComments = [];
+            
+            for (const response of npsData) {
+              const transformedResponse = pendoClient.transformToNpsResponse(response);
+              
+              // Enhanced deduplication check using visitorId
+              let isDuplicate = false;
+              
+              if ((transformedResponse as any).visitorId) {
+                isDuplicate = await storage.checkDuplicateResponse(
+                  (transformedResponse as any).visitorId,
+                  transformedResponse.date
+                );
+              } else {
+                // Fallback to old method if no visitorId
+                const existingResponses = await storage.getAllNpsResponses();
+                isDuplicate = existingResponses.some(r => 
+                  r.customer === (transformedResponse as any).customer && 
+                  r.date === transformedResponse.date
+                );
+              }
+              
+              if (!isDuplicate) {
+                // Add Pendo-specific fields
+                (transformedResponse as any).source = 'pendo';
+                (transformedResponse as any).visitorId = (response as any).visitorId || null;
+                
+                if (transformedResponse.comment && transformedResponse.comment.trim()) {
+                  responsesToProcess.push(transformedResponse);
+                } else {
+                  responsesWithoutComments.push(transformedResponse);
+                }
+              }
+            }
+            
+            console.log(`${guide.name}: ${responsesToProcess.length} comments to analyze, ${responsesWithoutComments.length} without comments`);
+            
+            // Use batch processing for comments that need analysis
+            if (responsesToProcess.length > 0) {
+              const commentsForAnalysis = responsesToProcess.map((r: any) => ({
+                comment: r.comment,
+                rating: r.rating
+              }));
+              
+              console.log(`Starting batch analysis for ${guide.name}...`);
+              const analysisResults = await analyzeBatchComments(commentsForAnalysis);
+              
+              // Store all analyzed responses
+              for (let i = 0; i < responsesToProcess.length; i++) {
+                const response = responsesToProcess[i];
+                const analysis = analysisResults[i];
+                
+                const npsResponse = await storage.createNpsResponse({
+                  rating: response.rating,
+                  comment: response.comment,
+                  customer: (response as any).customer,
+                  date: response.date,
+                  language: analysis.language,
+                  responseGroup: (response as any).responseGroup,
+                  sentiment: analysis.sentiment.sentiment,
+                  sentimentConfidence: analysis.sentiment.confidence,
+                  processed: true,
+                  source: (response as any).source,
+                  visitorId: (response as any).visitorId
+                });
+                
+                // Process topics if available
+                if (analysis.topics && analysis.topics.length > 0) {
+                  const topicMentions = analysis.topics.map((topic: any) => ({
+                    responseId: npsResponse.id,
+                    topicName: topic.category || topic,
+                    mentions: 1,
+                    sentiment: npsResponse.sentiment,
+                    confidence: topic.confidence || 0.8
+                  }));
+                  
+                  await storage.createManyTopicMentions(topicMentions);
+                }
+                
+                processedResponses.push(npsResponse);
+                totalImported++;
+              }
+            }
+            
+            // Store responses without comments
+            for (const response of responsesWithoutComments) {
+              const npsResponse = await storage.createNpsResponse({
+                rating: response.rating,
+                comment: '',
+                customer: (response as any).customer,
+                date: response.date,
+                language: 'en',
+                responseGroup: (response as any).responseGroup,
+                sentiment: 'neutral',
+                sentimentConfidence: 0,
+                processed: true,
+                source: (response as any).source,
+                visitorId: (response as any).visitorId
+              });
+              
+              processedResponses.push(npsResponse);
+              totalImported++;
+            }
+
+            results.push({
+              guide: guide.name,
+              status: 'success',
+              message: `Found ${npsData.length} responses, imported ${processedResponses.length} new responses from ${guide.name}`,
+              found: npsData.length,
+              imported: processedResponses.length
+            });
+          } else {
+            results.push({
+              guide: guide.name,
+              status: 'warning',
+              message: `No NPS data found for ${guide.name} guide`
+            });
+          }
+        } catch (error) {
+          console.error(`Error syncing ${guide.name}:`, error);
+          results.push({ 
+            guide: guide.name, 
+            status: 'error', 
+            message: `Failed to sync ${guide.name}: ${(error as Error).message}` 
+          });
+        }
+      }
+
+      // Update sync state with success
+      const currentPendoCount = syncState.pendoResponseCount || 0;
+      await storage.updateDataSyncState({
+        lastPendoSyncDate: new Date(),
+        pendoResponseCount: currentPendoCount + totalImported,
+        totalResponseCount: (syncState.csvResponseCount || 0) + currentPendoCount + totalImported,
+        lastSyncStatus: 'success',
+        lastSyncError: null
+      });
+
+      res.json({
+        success: true,
+        totalImported,
+        results,
+        message: `Sync completed. Imported ${totalImported} NPS responses from Android and iOS guides.`,
+        syncState: await storage.getDataSyncState()
+      });
+    } catch (error) {
+      console.error('Pendo sync all error:', error);
+      
+      // Update sync state with error
+      await storage.updateDataSyncState({
+        lastSyncStatus: 'failed',
+        lastSyncError: (error as Error).message
+      });
+      
+      res.status(500).json({ error: "Failed to sync Pendo data" });
+    }
+  });
+
+  // Test Pendo API connection
+  app.get("/api/pendo/test", async (req, res) => {
+    try {
+      if (!process.env.PENDO_API_KEY) {
+        return res.status(400).json({ error: "Pendo API key not configured" });
+      }
+
+      // Test API call for EU region
+      const testBody = {
+        response: { mimeType: "application/json" },
+        request: {
+          pipeline: [
+            {
+              source: { visitors: null }
+            },
+            {
+              limit: 1
+            }
+          ]
+        }
+      };
+
+      const response = await fetch('https://app.eu.pendo.io/api/v1/aggregation', {
+        method: 'POST',
+        headers: {
+          'X-Pendo-Integration-Key': process.env.PENDO_API_KEY,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(testBody)
+      });
+
+      const responseText = await response.text();
+      
+      if (response.ok) {
+        res.json({ 
+          success: true, 
+          message: "Pendo API connection working correctly (EU region)",
+          region: 'eu',
+          endpoint: 'https://app.eu.pendo.io/api/v1'
+        });
+      } else {
+        res.json({ 
+          success: false, 
+          error: responseText,
+          status: response.status,
+          message: responseText === 'missing jzb' ? 
+            "Integration API package may not be enabled. Contact your Pendo CSM." :
+            "API call failed"
+        });
+      }
+
+
+    } catch (error) {
+      res.status(500).json({ error: "Failed to test Pendo API" });
+    }
+  });
+
+  // Pendo integration endpoints
+  app.get("/api/pendo/sync", async (req, res) => {
+    try {
+      if (!process.env.PENDO_API_KEY) {
+        return res.status(400).json({ error: "Pendo API key not configured" });
+      }
+
+      const { method = 'aggregation', reportId, guideId, scorePollId, textPollId } = req.query;
+      
+      let pendoResponses;
+      
+      if (method === 'report' && reportId) {
+        // Use Report API
+        pendoResponses = await pendoClient.fetchNpsReport(reportId as string);
+      } else if (method === 'aggregation' && guideId && scorePollId && textPollId) {
+        // Use Aggregation API
+        const oneWeekAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
+        pendoResponses = await pendoClient.fetchNpsAggregation({
+          guideId: guideId as string,
+          scorePollId: scorePollId as string,
+          textPollId: textPollId as string,
+          startTime: oneWeekAgo
+        });
+      } else {
+        return res.status(400).json({ 
+          error: "Invalid parameters. For report method, provide reportId. For aggregation method, provide guideId, scorePollId, and textPollId." 
+        });
+      }
+
+      // Transform Pendo data to our schema
+      const transformedResponses = pendoResponses.map((pendoData: any) => 
+        pendoClient.transformToNpsResponse(pendoData)
+      );
+
+      // Analyze sentiment with AI in batches
+      const commentsForAnalysis = transformedResponses.map((r: any) => ({
+        comment: r.comment,
+        rating: r.rating
+      }));
+
+      const aiResults = await analyzeBatchComments(commentsForAnalysis);
+
+      // Merge AI results with transformed data
+      const processedResponses = transformedResponses.map((response: any, index: any) => ({
+        ...response,
+        sentiment: aiResults[index]?.sentiment?.sentiment || 'neutral',
+        sentimentConfidence: aiResults[index]?.sentiment?.confidence || 0,
+        language: aiResults[index]?.language || 'en',
+        processed: true
+      }));
+
+      // Save to database
+      const savedResponses = await storage.createManyNpsResponses(processedResponses);
+
+      res.json({
+        success: true,
+        imported: savedResponses.length,
+        message: `Successfully imported ${savedResponses.length} NPS responses from Pendo`
+      });
+    } catch (error) {
+      console.error('Pendo sync error:', error);
+      res.status(500).json({ error: "Failed to sync Pendo data" });
+    }
+  });
+
+  // Discover Poll IDs for a Guide
+  app.get("/api/pendo/discover/:guideId", async (req, res) => {
+    try {
+      const { guideId } = req.params;
+      const pollInfo = await handlePollDiscovery(guideId);
+      res.json(pollInfo);
+    } catch (error: any) {
+      console.error('Poll discovery error:', error);
+      res.status(500).json({ error: (error as Error).message || "Failed to discover poll IDs" });
+    }
+  });
+
+  // Get data sync state
+  app.get("/api/sync-state", async (req, res) => {
+    try {
+      const syncState = await storage.getDataSyncState();
+      res.json(syncState || {
+        key: 'main',
+        csvUploadDate: null,
+        csvResponseCount: 0,
+        lastPendoSyncDate: null,
+        pendoResponseCount: 0,
+        totalResponseCount: 0,
+        lastSyncStatus: null,
+        lastSyncError: null
+      });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to get sync state" });
+    }
+  });
+
+  // Get Pendo sync status
+  app.get("/api/pendo/status", async (req, res) => {
+    try {
+      const hasApiKey = !!process.env.PENDO_API_KEY;
+      const syncState = await storage.getDataSyncState();
+      
+      res.json({
+        configured: hasApiKey,
+        lastSync: syncState?.lastPendoSyncDate || null,
+        message: hasApiKey ? "Pendo integration is configured" : "Pendo API key not configured"
+      });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to check Pendo status" });
+    }
+  });
+
+  // Test Gemini batch processing endpoint
+  app.post("/api/test-batch-processing", async (req, res) => {
+    try {
+      const { comments } = req.body;
+      
+      if (!comments || !Array.isArray(comments)) {
+        return res.status(400).json({ error: "Comments array required" });
+      }
+      
+      console.log(`Testing batch processing with ${comments.length} comments`);
+      const startTime = Date.now();
+      
+      const results = await analyzeBatchComments(comments);
+      
+      const endTime = Date.now();
+      const duration = (endTime - startTime) / 1000;
+      
+      res.json({
+        success: true,
+        totalComments: comments.length,
+        processingTime: `${duration.toFixed(2)} seconds`,
+        averageTimePerComment: `${(duration / comments.length).toFixed(3)} seconds`,
+        results: results.slice(0, 5) // Return first 5 results as sample
+      });
+    } catch (error) {
+      console.error('Batch test error:', error);
+      res.status(500).json({ error: "Batch processing test failed" });
+    }
+  });
+
+  // Set up scheduled sync (optional - can be triggered manually or via cron)
+  if (process.env.PENDO_API_KEY && process.env.PENDO_AUTO_SYNC === 'true') {
+    // Schedule daily sync at 2 AM
+    cron.schedule('0 2 * * *', async () => {
+      console.log('Running scheduled Pendo sync...');
+      try {
+        const response = await fetch(`http://localhost:${process.env.PORT || 5000}/api/pendo/sync`, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        if (response.ok) {
+          const result = await response.json();
+          console.log('Pendo sync completed:', result);
+        } else {
+          console.error('Pendo sync failed:', response.status);
+        }
+      } catch (error) {
+        console.error('Pendo sync error:', error);
+      }
+    });
+    
+    console.log('Pendo auto-sync scheduled for daily execution at 2 AM');
+  }
+
+  const httpServer = createServer(app);
+  return httpServer;
+}
+
+

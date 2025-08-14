@@ -1,0 +1,162 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: hsl(0, 0%, 100%);
+  --foreground: hsl(20, 14.3%, 4.1%);
+  --muted: hsl(60, 4.8%, 95.9%);
+  --muted-foreground: hsl(25, 5.3%, 44.7%);
+  --popover: hsl(0, 0%, 100%);
+  --popover-foreground: hsl(20, 14.3%, 4.1%);
+  --card: hsl(0, 0%, 100%);
+  --card-foreground: hsl(20, 14.3%, 4.1%);
+  --border: hsl(20, 5.9%, 90%);
+  --input: hsl(20, 5.9%, 90%);
+  --primary: hsl(207, 90%, 54%);
+  --primary-foreground: hsl(211, 100%, 99%);
+  --secondary: hsl(60, 4.8%, 95.9%);
+  --secondary-foreground: hsl(24, 9.8%, 10%);
+  --accent: hsl(60, 4.8%, 95.9%);
+  --accent-foreground: hsl(24, 9.8%, 10%);
+  --destructive: hsl(0, 84.2%, 60.2%);
+  --destructive-foreground: hsl(60, 9.1%, 97.8%);
+  --ring: hsl(20, 14.3%, 4.1%);
+  --radius: 0.5rem;
+  
+  /* Custom colors for NPS Dashboard */
+  --neutral-50: hsl(210, 40%, 98%);
+  --neutral-100: hsl(210, 40%, 96%);
+  --neutral-200: hsl(214, 32%, 91%);
+  --neutral-500: hsl(220, 13%, 46%);
+  --neutral-700: hsl(215, 25%, 27%);
+  --neutral-900: hsl(224, 71%, 4%);
+  
+  --success: hsl(142, 71%, 45%);
+  --warning: hsl(43, 96%, 56%);
+  --danger: hsl(0, 84%, 60%);
+  
+  --primary-dark: hsl(207, 90%, 39%);
+}
+
+.dark {
+  --background: hsl(240, 10%, 3.9%);
+  --foreground: hsl(0, 0%, 98%);
+  --muted: hsl(240, 3.7%, 15.9%);
+  --muted-foreground: hsl(240, 5%, 64.9%);
+  --popover: hsl(240, 10%, 3.9%);
+  --popover-foreground: hsl(0, 0%, 98%);
+  --card: hsl(240, 10%, 3.9%);
+  --card-foreground: hsl(0, 0%, 98%);
+  --border: hsl(240, 3.7%, 15.9%);
+  --input: hsl(240, 3.7%, 15.9%);
+  --primary: hsl(207, 90%, 54%);
+  --primary-foreground: hsl(211, 100%, 99%);
+  --secondary: hsl(240, 3.7%, 15.9%);
+  --secondary-foreground: hsl(0, 0%, 98%);
+  --accent: hsl(240, 3.7%, 15.9%);
+  --accent-foreground: hsl(0, 0%, 98%);
+  --destructive: hsl(0, 62.8%, 30.6%);
+  --destructive-foreground: hsl(0, 0%, 98%);
+  --ring: hsl(240, 4.9%, 83.9%);
+  --radius: 0.5rem;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply font-sans antialiased bg-background text-foreground;
+  }
+}
+
+/* Custom utility classes for NPS Dashboard */
+.bg-neutral-50 {
+  background-color: var(--neutral-50);
+}
+
+.bg-neutral-100 {
+  background-color: var(--neutral-100);
+}
+
+.bg-neutral-200 {
+  background-color: var(--neutral-200);
+}
+
+.text-neutral-500 {
+  color: var(--neutral-500);
+}
+
+.text-neutral-700 {
+  color: var(--neutral-700);
+}
+
+.text-neutral-900 {
+  color: var(--neutral-900);
+}
+
+.border-neutral-200 {
+  border-color: var(--neutral-200);
+}
+
+.divide-neutral-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--neutral-200);
+}
+
+.hover\:bg-neutral-50:hover {
+  background-color: var(--neutral-50);
+}
+
+.hover\:bg-neutral-100:hover {
+  background-color: var(--neutral-100);
+}
+
+.hover\:text-neutral-700:hover {
+  color: var(--neutral-700);
+}
+
+.hover\:border-primary:hover {
+  border-color: var(--primary);
+}
+
+.bg-primary\/10 {
+  background-color: hsl(207, 90%, 54%, 0.1);
+}
+
+.bg-success\/10 {
+  background-color: hsl(142, 71%, 45%, 0.1);
+}
+
+.bg-warning\/10 {
+  background-color: hsl(43, 96%, 56%, 0.1);
+}
+
+.bg-danger\/10 {
+  background-color: hsl(0, 84%, 60%, 0.1);
+}
+
+.text-success {
+  color: var(--success);
+}
+
+.text-warning {
+  color: var(--warning);
+}
+
+.text-danger {
+  color: var(--danger);
+}
+
+.text-primary-dark {
+  color: var(--primary-dark);
+}
+
+.bg-primary-dark {
+  background-color: var(--primary-dark);
+}
+
+.hover\:bg-primary-dark:hover {
+  background-color: var(--primary-dark);
+}

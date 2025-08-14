@@ -1,0 +1,27 @@
+{
+  "name": "@data-visualizer/shared",
+  "version": "1.0.0",
+  "description": "Shared TypeScript types and utilities",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./types": {
+      "types": "./dist/types/index.d.ts", 
+      "default": "./dist/types/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "type-check": "tsc --noEmit",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "zod": "^3.19.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}

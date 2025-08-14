@@ -1,0 +1,48 @@
+node_modules
+dist
+.DS_Store
+server/public
+vite.config.ts.*
+*.tar.gz
+
+# Local environment & data
+.env
+data/*.db*
+uploads/**
+backups/**
+
+# Development and IDE files
+.idea/
+.vscode/
+misc/
+
+# Large local assets not needed in git
+attached_assets/**
+*.zip
+*.tar.gz
+ollama-windows-amd64.zip
+ollama-windows-amd64/**
+
+# Exclude embedded ollama repo (not needed in main repo)
+ollama/
+
+# Large build artifacts and dependencies
+vendor/
+node_modules/
+dist/
+build/
+*.exe
+*.node
+*.pack
+*.idx
+*.rev
+
+# Generated maps and large JS bundles
+*.js.map
+chunk-*.js
+*-legacy.d.ts
+
+# Large text files and datasets
+*.txt
+test_data.csv
+*.model

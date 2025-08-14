@@ -1,0 +1,47 @@
+{
+  "name": "data-visualizer",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "NPS Analytics Dashboard with integrated backend",
+  "workspaces": [
+    "packages/client",
+    "packages/server",
+    "packages/shared"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w packages/server\" \"npm run dev -w packages/client\"",
+    "dev:client": "npm run dev -w packages/client",
+    "dev:server": "npm run dev -w packages/server",
+    "build": "npm run build:shared && npm run build:client && npm run build:server",
+    "build:client": "npm run build -w packages/client",
+    "build:server": "npm run build -w packages/server",
+    "build:shared": "npm run build -w packages/shared",
+    "start": "npm run start -w packages/server",
+    "preview": "npm run preview -w packages/client",
+    "clean": "rimraf dist packages/*/dist packages/*/node_modules node_modules",
+    "type-check": "npm run type-check -w packages/shared && npm run type-check -w packages/client && npm run type-check -w packages/server"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.85.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "concurrently": "^8.2.2",
+    "date-fns": "^4.1.0",
+    "lucide-react": "^0.539.0",
+    "recharts": "^3.1.2",
+    "rimraf": "^5.0.10",
+    "tailwind-merge": "^3.3.1",
+    "vite": "^5.4.0",
+    "wouter": "^3.7.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "cross-env": "^7.0.3",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  }
+}

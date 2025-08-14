@@ -1,0 +1,38 @@
+{
+  "name": "@data-visualizer/server",
+  "version": "1.0.0",
+  "description": "NPS Analytics Backend with Express and Hono APIs",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --clear-screen=false src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@data-visualizer/shared": "file:../shared",
+    "@hono/node-server": "^1.12.2",
+    "@hono/zod-validator": "^0.2.2",
+    "better-sqlite3": "^12.2.0",
+    "cors": "^2.8.5", 
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "hono": "^4.6.3",
+    "multer": "^2.0.2",
+    "node-cron": "^4.2.1",
+    "node-fetch": "^3.3.2",
+    "xlsx": "^0.18.5",
+    "zod": "^3.19.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.3",
+    "@types/multer": "^2.0.0", 
+    "@types/node": "^24.1.0",
+    "@types/node-cron": "^3.0.11",
+    "@types/node-fetch": "^2.6.12",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}
