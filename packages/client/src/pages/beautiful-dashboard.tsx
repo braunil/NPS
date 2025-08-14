@@ -165,7 +165,7 @@ const NPSDashboard = () => {
   // Bulk upload mutation
   const uploadMutation = useMutation({
     mutationFn: async (data: any[]) => {
-      const response = await apiRequest('/api/upload-csv', 'POST', { responses: data });
+      const response = await apiRequest('/api/nps-responses/bulk', 'POST', { responses: data });
       return response;
     },
     onSuccess: (data) => {
@@ -1739,7 +1739,7 @@ const NPSDashboard = () => {
                                         borderColor: getSentimentColor(topic.sentiment)
                                       }}
                                     >
-                                      {topic.name}
+                                      {topic.topic}
                                     </Badge>
                                   ))
                                 ) : (

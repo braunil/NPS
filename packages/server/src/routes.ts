@@ -20,6 +20,66 @@ const insertNpsResponseSchema = z.object({
 
 const upload = multer({ storage: multer.memoryStorage() });
 
+// Function to process comments with AI in the background
+async function processCommentsWithAI() {
+  try {
+    console.log('🔍 Looking for comments that need AI processing...');
+    const responses = LocalDB.getResponses({}) as any[];
+    const commentsToProcess = responses.filter((r: any) => 
+      r.comment && 
+      r.comment.trim().length > 0 && 
+      (!r.sentiment || r.sentiment === 'neutral')
+    );
+    
+    if (commentsToProcess.length === 0) {
+      console.log('✅ No comments need AI processing');
+      return;
+    }
+    
+    console.log(`🤖 Starting AI processing for ${commentsToProcess.length} comments...`);
+    aiTracker.startProcessing(commentsToProcess.length);
+    
+    for (const response of commentsToProcess) {
+      try {
+        console.log(`🔄 Processing comment: "${response.comment?.substring(0, 50)}..."`);
+        
+        const sentimentResult = await ollamaLLM.analyzeSentiment(
+          response.comment, 
+          response.language || 'en'
+        );
+        
+        const topicsResult = await ollamaLLM.extractTopics(
+          response.comment, 
+          response.language || 'en'
+        );
+        
+        // Update the response with AI analysis
+        LocalDB.updateResponse(response.id, {
+          sentiment: sentimentResult.sentiment || 'neutral',
+          sentiment_confidence: 0.8, // Default confidence
+          topics: topicsResult.topics || []
+        });
+        
+        aiTracker.incrementProcessed();
+        console.log(`✅ Processed comment ${response.id}: ${sentimentResult.sentiment}`);
+        
+        // Small delay to avoid overwhelming the AI service
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+      } catch (error) {
+        console.error(`❌ Error processing comment ${response.id}:`, error);
+        aiTracker.incrementProcessed(); // Still increment to avoid hanging
+      }
+    }
+    
+    aiTracker.completeProcessing();
+    console.log('🎉 AI processing completed!');
+    
+  } catch (error) {
+    console.error('❌ Error in processCommentsWithAI:', error);
+  }
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
   // Basic request logging
   app.use((req, _res, next) => {
@@ -110,6 +170,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Manual trigger for AI processing of all comments
+  app.post('/api/process-ai', async (req, res) => {
+    try {
+      if (aiTracker.isProcessing()) {
+        return res.status(409).json({
+          success: false,
+          error: 'AI processing is already in progress'
+        });
+      }
+      
+      console.log('🚀 Manual AI processing trigger initiated...');
+      processCommentsWithAI();
+      
+      res.json({
+        success: true,
+        message: 'AI processing started in background'
+      });
+      
+    } catch (error) {
+      console.error('❌ Manual AI processing error:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
+
   app.post('/api/analyze-comment', async (req, res) => {
     try { res.json(await ollamaLLM.analyzeComment(req.body.comment, req.body.language||'en')); }
     catch { res.status(500).json({ error: 'Analyze failed' }); }
@@ -124,9 +211,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch { res.status(500).json({ error: 'Batch failed' }); }
   });
 
-  app.post('/api/upload-csv', (req, res) => {
+  app.post('/api/csv', async (req, res) => {
     try {
-      const arr = Array.isArray(req.body.responses) ? req.body.responses : [];
+      const arr = z.array(z.object({
+        rating: z.number(),
+        comment: z.string().optional(),
+        language: z.string().optional(),
+        date: z.string().optional(),
+        customer: z.string().optional(),
+        visitorId: z.string().optional(),
+        platform: z.string().optional(),
+        sentiment: z.string().optional(),
+        sentimentConfidence: z.number().optional()
+      })).parse(req.body);
+      
       let inserted = 0;
       for (const r of arr) {
         try {
@@ -136,9 +234,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           
           LocalDB.insertResponse({
             rating: r.rating,
-            comment: r.comment,
-            language: r.language,
-            date: r.date,
+            comment: r.comment || '',
+            language: r.language || 'en',
+            date: r.date || new Date().toISOString().split('T')[0],
             customer_id: r.customer,
             visitor_id: r.visitorId,
             platform: r.platform,
@@ -149,11 +247,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           inserted++;
         } catch {}
       }
+      
+      // Trigger AI processing for all comments that don't have sentiment/topics
+      console.log('🚀 Starting AI processing for CSV upload...');
+      processCommentsWithAI();
+      
       res.json({ message: 'Inserted ' + inserted, inserted });
     } catch { res.status(500).json({ error: 'Upload failed' }); }
   });
 
-  app.post('/api/upload', upload.single('file'), (req, res) => {
+  app.post('/api/upload', upload.single('file'), async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: 'No file' });
       const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
@@ -177,13 +280,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
           inserted++; 
         } catch {}
       }
+      
+      // Trigger AI processing for all comments that don't have sentiment/topics
+      console.log('🚀 Starting AI processing for uploaded data...');
+      processCommentsWithAI();
+      
       res.json({ message: 'File processed', inserted });
     } catch { res.status(500).json({ error: 'File upload failed' }); }
   });
 
   app.post('/api/nps-responses/bulk', (req, res) => {
     try {
-      const parsed = z.array(insertNpsResponseSchema).parse(req.body);
+      // Handle both formats: direct array or { responses: array }
+      const data = Array.isArray(req.body) ? req.body : req.body.responses;
+      const parsed = z.array(insertNpsResponseSchema).parse(data);
       let inserted = 0;
       for (const r of parsed) { 
         try { 
@@ -201,6 +311,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           inserted++; 
         } catch {} 
       }
+      
+      // Trigger AI processing for the uploaded data
+      if (inserted > 0) {
+        processCommentsWithAI().catch(error => {
+          console.error('Background AI processing failed:', error);
+        });
+      }
+      
       res.json({ inserted });
     } catch (e: any) {
       if (e instanceof z.ZodError) return res.status(400).json({ error: 'Invalid data', details: e.issues });

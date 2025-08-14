@@ -133,6 +133,39 @@ export class LocalDB {
     insertMany(topics);
   }
 
+  // Update existing response with AI analysis results
+  static updateResponse(id: number, updates: {
+    sentiment?: string;
+    sentiment_confidence?: number;
+    topics?: Array<{topic: string, confidence: number}>;
+  }) {
+    try {
+      const stmt = db.prepare(`
+        UPDATE nps_responses 
+        SET sentiment = COALESCE(?, sentiment), 
+            sentiment_confidence = COALESCE(?, sentiment_confidence),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `);
+      
+      stmt.run(updates.sentiment, updates.sentiment_confidence, id);
+      
+      // If topics are provided, insert them as topic mentions
+      if (updates.topics && updates.topics.length > 0) {
+        // First, delete existing topic mentions for this response
+        const deleteStmt = db.prepare('DELETE FROM topic_mentions WHERE response_id = ?');
+        deleteStmt.run(id);
+        
+        // Then insert new topic mentions with their confidence values
+        this.insertTopicMentions(id, updates.topics);
+      }
+      
+    } catch (error) {
+      console.error('Error updating response:', error);
+      throw error;
+    }
+  }
+
   // Get all responses with filters
   static getResponses(filters: {
     startDate?: string;
@@ -198,7 +231,33 @@ export class LocalDB {
     query += ` GROUP BY r.id ORDER BY r.date DESC`;
     
     const stmt = db.prepare(query);
-    return stmt.all(...params);
+    const results = stmt.all(...params) as any[];
+    
+    // Process results to convert comma-separated topics to arrays
+    return results.map(row => {
+      const processedRow = { ...row };
+      
+      // Convert topics from comma-separated string to array of objects
+      if (row.topics) {
+        const topicNames = row.topics.split(',').filter((t: string) => t.trim());
+        const confidences = row.topic_confidences ? 
+          row.topic_confidences.split(',').map((c: string) => parseFloat(c.trim())) : 
+          topicNames.map(() => 0.8); // Default confidence
+        
+        processedRow.topics = topicNames.map((topic: string, index: number) => ({
+          topic: topic.trim(),
+          confidence: confidences[index] || 0.8,
+          sentiment: row.sentiment || 'neutral'
+        }));
+      } else {
+        processedRow.topics = [];
+      }
+      
+      // Clean up the separate topic_confidences field
+      delete processedRow.topic_confidences;
+      
+      return processedRow;
+    });
   }
 
   // Get NPS statistics

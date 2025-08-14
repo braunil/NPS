@@ -112,9 +112,26 @@ Context: Swiss banking mobile app (payments, trading, accounts, investments)
 ${lang.examples}
 
 Banking-specific sentiment rules:
-- Positive: Praise for features, security, ease of use, fast transactions, good customer service
-- Negative: Complaints about fees, technical issues, crashes, slow performance, poor customer service, security concerns
-- Neutral: Factual statements, feature requests, mixed feedback, neutral observations
+- Positive: Praise for features, security, ease of use, fast transactions, good customer service, satisfaction, "excellent", "great", "love", "helpful", "good", "clean design", "usability"
+- Negative: Complaints about fees, technical issues, crashes, slow performance, poor customer service, security concerns, failures, bugs, problems, freezing, errors, "frustrate", "unreliable", "confusing", "steep pricing"
+- Neutral: Factual statements without clear positive/negative tone, feature requests, neutral observations, "okay", "average", "could be better"
+
+IMPORTANT: Be decisive in classification. 
+- Words like "excellent", "great", "love", "helpful", "good" should be POSITIVE
+- Technical problems, failures, crashes, and complaints should be NEGATIVE  
+- High ratings (9-10) with positive words should be POSITIVE
+- Low ratings (1-4) with complaint words should be NEGATIVE
+
+Examples:
+- "Support team was very helpful!" → POSITIVE (helpful = positive word)
+- "Excellent usability and clean design" → POSITIVE (excellent = strong positive)
+- "UI freezes often" → NEGATIVE (technical problem)
+- "Export feature failed twice" → NEGATIVE (functionality failure)  
+- "App crashes" → NEGATIVE (technical issue)
+- "High fees" → NEGATIVE (pricing complaint)
+- "Okay tool but pricing steep" → NEGATIVE (steep pricing complaint)
+- "Works fine" → NEUTRAL (factual)
+- "Average - nothing special" → NEUTRAL (neutral description)
 
 Respond with ONLY this JSON format:
 {
