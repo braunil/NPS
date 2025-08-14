@@ -18,5 +18,12 @@
     }
   },
   "include": ["src/**/*"],
-  "exclude": ["dist", "node_modules"]
+  "exclude": [
+    "dist", 
+    "node_modules",
+    "src/pendo.ts",
+    "src/pendo-discover.ts", 
+    "src/replitAuth.ts",
+    "src/hono-api.ts"
+  ]
 }

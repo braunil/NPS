@@ -3,9 +3,20 @@ import { createServer, type Server } from 'http';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
 import { z } from 'zod';
-import { insertNpsResponseSchema } from '@data-visualizer/shared';
+// import { insertNpsResponseSchema } from '@data-visualizer/shared';
 import { LocalDB } from './local-db';
 import { ollamaLLM } from './ollama-llm';
+import { aiTracker } from './ai-processing-status';
+
+// Local schema definition to avoid import issues
+const insertNpsResponseSchema = z.object({
+  rating: z.number().min(0).max(10),
+  comment: z.string().optional(),
+  date: z.string().optional(),
+  language: z.string().optional(),
+  sentiment: z.string().optional(),
+  themes: z.array(z.string()).optional()
+});
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -17,6 +28,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.get('/api/test', (_req, res) => res.json({ message: 'Server OK' }));
+
+  app.get('/api/ai-status', (_req, res) => {
+    try {
+      const status = aiTracker.getStatus();
+      const progress = aiTracker.getProgress();
+      res.json({
+        total: status.total,
+        processed: status.processed,
+        inProgress: status.inProgress,
+        startTime: status.startTime?.toISOString() || null,
+        lastUpdate: status.lastUpdate?.toISOString() || null,
+        progress: progress,
+        isProcessing: status.inProgress
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to get AI status' });
+    }
+  });
 
   app.get('/api/nps-responses', (_req, res) => {
     try { res.json(LocalDB.getResponses()); }
@@ -137,7 +166,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const parsed = z.array(insertNpsResponseSchema).parse(req.body);
       let inserted = 0;
-      for (const r of parsed) { try { LocalDB.insertResponse({ rating: r.rating, comment: r.comment, language: r.language, date: r.date }); inserted++; } catch {} }
+      for (const r of parsed) { 
+        try { 
+          LocalDB.insertResponse({ 
+            rating: r.rating, 
+            comment: r.comment || '', 
+            language: r.language || 'en', 
+            date: r.date || new Date().toISOString().split('T')[0]
+          }); 
+          inserted++; 
+        } catch {} 
+      }
       res.json({ inserted });
     } catch (e: any) {
       if (e instanceof z.ZodError) return res.status(400).json({ error: 'Invalid data', details: e.issues });

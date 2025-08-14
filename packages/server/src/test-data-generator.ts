@@ -206,7 +206,7 @@ export function generateTestData(count: number = 100) {
         comment = shortComments[Math.floor(Math.random() * shortComments.length)];
       } else {
         // Full comment based on sentiment
-        const langComments = comments[language][sentimentCategory];
+        const langComments = (comments as any)[language][sentimentCategory];
         comment = langComments[Math.floor(Math.random() * langComments.length)];
       }
     }
