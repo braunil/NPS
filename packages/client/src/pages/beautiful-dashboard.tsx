@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
-import { Upload, FileText, TrendingUp, MessageSquare, Brain, Users, AlertCircle, Download, Loader2, BarChart3, Database, Activity, RefreshCw, Search, Filter, Globe, Star, Settings, Calendar, Clock, Target, Zap } from 'lucide-react';
+import { Upload, FileText, TrendingUp, MessageSquare, Brain, Users, AlertCircle, Download, Loader2, BarChart3, Database, Activity, RefreshCw, Search, Filter, Globe, Star } from 'lucide-react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { apiRequest, queryClient } from '../lib/queryClient';
 import { Button } from '../components/ui/button';
@@ -83,7 +83,6 @@ interface TopicData {
 interface SyncState {
   csvUploadDate?: string;
   csvResponseCount?: number;
-  pendoResponseCount?: number;
 }
 
 interface ThemeDistribution {
@@ -119,19 +118,6 @@ const NPSDashboard = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [topicData, setTopicData] = useState<TopicData[]>([]);
-  const [pendoConfig, setPendoConfig] = useState({
-    method: 'aggregation',
-    guideId: '',
-    scorePollId: '',
-    textPollId: '',
-    reportId: '',
-    autoSync: false
-  });
-  const [pendoGuides] = useState([
-    { name: 'Android', guideId: '1s7Mqs8ny5f_-ynVNJqDQYe1FXA' },
-    { name: 'iOS', guideId: 'm6JZKfqh3D36V5fqFfGd8Rhf3AI' }
-  ]);
-  const [isSyncing, setIsSyncing] = useState(false);
   
   // Advanced filter state
   const [filters, setFilters] = useState<FilterState>({
@@ -229,51 +215,6 @@ const NPSDashboard = () => {
         variant: "destructive",
       });
     },
-  });
-
-  // Pendo sync mutation
-  const pendoSyncMutation = useMutation({
-    mutationFn: async () => {
-      const params = new URLSearchParams();
-      params.append('method', pendoConfig.method);
-      
-      if (pendoConfig.method === 'report') {
-        params.append('reportId', pendoConfig.reportId);
-      } else {
-        params.append('guideId', pendoConfig.guideId);
-        params.append('scorePollId', pendoConfig.scorePollId);
-        params.append('textPollId', pendoConfig.textPollId);
-      }
-      
-      const response = await apiRequest(`/api/pendo/sync?${params.toString()}`, 'GET');
-      return response;
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['/api/nps-responses'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/nps-stats'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/theme-distribution'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/sync-state'] });
-      toast({
-        title: "Pendo Sync Complete",
-        description: data.message || `Successfully imported ${data.imported} responses`,
-      });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Sync Failed",
-        description: error.message || "Failed to sync data from Pendo",
-        variant: "destructive",
-      });
-    }
-  });
-
-  // Check Pendo status
-  const { data: pendoStatus } = useQuery({
-    queryKey: ['/api/pendo/status'],
-    queryFn: async () => {
-      const response = await apiRequest('/api/pendo/status', 'GET');
-      return response;
-    }
   });
 
   // AI-powered sentiment analysis using Gemini
@@ -1074,7 +1015,6 @@ const NPSDashboard = () => {
     { id: 'overview', label: 'Overview', icon: BarChart3 },
     { id: 'analytics', label: 'Analytics', icon: TrendingUp },
     { id: 'upload', label: 'Upload Data', icon: Upload },
-    { id: 'pendo', label: 'Pendo Sync', icon: RefreshCw },
     { id: 'topics', label: 'Topic Extraction', icon: Brain },
     { id: 'responses', label: 'Response Groups', icon: Users },
   ];
@@ -1458,176 +1398,6 @@ const NPSDashboard = () => {
             </div>
           )}
 
-          {selectedView === 'pendo' && (
-            <div className="space-y-6">
-              <Card>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle>Pendo Integration</CardTitle>
-                    <Settings className="w-5 h-5 text-neutral-500" />
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    <div className="p-4 bg-blue-50 rounded-lg">
-                      <h3 className="font-medium text-blue-900 mb-2">Real-Time NPS Data Sync</h3>
-                      <p className="text-sm text-blue-700">
-                        Automatically import NPS survey responses from your Pendo Android and iOS guides using Guide Events extraction.
-                      </p>
-                    </div>
-                    
-                    <div className="p-3 bg-green-50 rounded-lg">
-                      <p className="text-sm text-green-800">
-                        <span className="font-medium">Configured Guides:</span> Android & iOS (EU Region)
-                      </p>
-                      <div className="mt-2 space-y-1">
-                        {pendoGuides.map(guide => (
-                          <div key={guide.guideId} className="text-xs text-green-700">
-                            • {guide.name}: {guide.guideId}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                    
-                    <div className="p-4 bg-purple-50 rounded-lg">
-                      <h4 className="font-medium text-purple-900 mb-2">Sync NPS Data</h4>
-                      <p className="text-sm text-purple-700 mb-3">
-                        Import NPS responses from both Android and iOS guides with AI-powered sentiment analysis.
-                      </p>
-                      <div className="flex gap-2 flex-wrap">
-                        <Button 
-                          onClick={async () => {
-                            setIsSyncing(true);
-                            try {
-                              const response = await apiRequest('POST', '/api/pendo/sync-all');
-                              const data = await response.json();
-                              
-                              if (data.success) {
-                                toast({
-                                  title: "Sync Completed",
-                                  description: `${data.message}`,
-                                });
-                                
-                                // Show individual guide results
-                                data.results.forEach(result => {
-                                  const variant = result.status === 'error' ? 'destructive' : 'default';
-                                  toast({
-                                    title: `${result.guide} Guide`,
-                                    description: result.message,
-                                    variant
-                                  });
-                                });
-                                
-                                // Refresh the data
-                                queryClient.invalidateQueries({ queryKey: ['/api/nps-responses'] });
-                                queryClient.invalidateQueries({ queryKey: ['/api/nps-stats'] });
-                              } else {
-                                toast({
-                                  title: "Sync Failed",
-                                  description: data.error || "Unknown error occurred",
-                                  variant: "destructive"
-                                });
-                              }
-                            } catch (error) {
-                              toast({
-                                title: "Sync Failed",
-                                description: "Failed to start sync process",
-                                variant: "destructive"
-                              });
-                            } finally {
-                              setIsSyncing(false);
-                            }
-                          }}
-                          disabled={isSyncing}
-                        >
-                          <RefreshCw className={`w-4 h-4 mr-2 ${isSyncing ? 'animate-spin' : ''}`} />
-                          {isSyncing ? 'Syncing...' : 'Sync NPS Data'}
-                        </Button>
-                        
-                        
-                        
-                        <Button
-                          onClick={async () => {
-                            try {
-                              const response = await apiRequest('GET', '/api/pendo/test');
-                              const data = await response.json();
-                              
-                              if (data.success) {
-                                toast({
-                                  title: "API Test Success",
-                                  description: "Pendo API connection is working correctly",
-                                });
-                              } else {
-                                toast({
-                                  title: "API Test Failed",
-                                  description: data.message || data.error,
-                                  variant: "destructive"
-                                });
-                              }
-                            } catch (error) {
-                              toast({
-                                title: "API Test Error",
-                                description: "Failed to test API connection",
-                                variant: "destructive"
-                              });
-                            }
-                          }}
-                          size="default"
-                          variant="outline"
-                        >
-                          Test Connection
-                        </Button>
-                        
-                        <Button
-                          onClick={async () => {
-                            setIsSyncing(true);
-                            try {
-                              const data = await apiRequest('/api/generate-test-data', 'POST');
-                              
-                              if (data.success) {
-                                toast({
-                                  title: "Test Data Generated",
-                                  description: `Successfully generated ${data.generated} test NPS responses with full AI analysis`,
-                                });
-                                
-                                // Refresh the data
-                                queryClient.invalidateQueries({ queryKey: ['/api/nps-responses'] });
-                                queryClient.invalidateQueries({ queryKey: ['/api/nps-stats'] });
-                                queryClient.invalidateQueries({ queryKey: ['/api/theme-distribution'] });
-                                queryClient.invalidateQueries({ queryKey: ['/api/sync-state'] });
-                              } else {
-                                toast({
-                                  title: "Generation Failed",
-                                  description: data.error || "Unknown error occurred",
-                                  variant: "destructive"
-                                });
-                              }
-                            } catch (error) {
-                              toast({
-                                title: "Generation Failed",
-                                description: "Failed to generate test data",
-                                variant: "destructive"
-                              });
-                            } finally {
-                              setIsSyncing(false);
-                            }
-                          }}
-                          disabled={isSyncing}
-                          variant="outline"
-                        >
-                          <Database className="w-4 h-4 mr-2" />
-                          Generate 100 Test Responses
-                        </Button>
-                        
-
-                      </div>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          )}
-
           {selectedView === 'upload' && (
             <div className="space-y-6">
               <Card>
@@ -1699,11 +1469,6 @@ const NPSDashboard = () => {
                               {(syncState.csvResponseCount ?? 0) > 0 && (
                                 <p className="text-xs text-neutral-500">
                                   CSV data: {syncState.csvResponseCount} responses
-                                </p>
-                              )}
-                              {(syncState.pendoResponseCount ?? 0) > 0 && (
-                                <p className="text-xs text-neutral-500">
-                                  Pendo data: {syncState.pendoResponseCount} responses
                                 </p>
                               )}
                             </div>
