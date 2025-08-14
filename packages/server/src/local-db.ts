@@ -27,6 +27,7 @@ db.exec(`
     customer_id TEXT,
     visitor_id TEXT,
     platform TEXT,
+    response_group TEXT,
     sentiment TEXT,
     sentiment_confidence REAL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -49,7 +50,28 @@ db.exec(`
     records_count INTEGER,
     status TEXT
   );
+`);
 
+// Migration: Add response_group column if it doesn't exist
+try {
+  db.exec(`ALTER TABLE nps_responses ADD COLUMN response_group TEXT;`);
+} catch (error) {
+  // Column already exists, that's fine
+}
+
+// Update existing records with calculated response_group
+db.exec(`
+  UPDATE nps_responses 
+  SET response_group = CASE 
+    WHEN rating >= 9 THEN 'Promoter'
+    WHEN rating >= 7 THEN 'Passive'
+    ELSE 'Detractor'
+  END
+  WHERE response_group IS NULL;
+`);
+
+// Create indexes for better performance
+db.exec(`
   CREATE INDEX IF NOT EXISTS idx_nps_date ON nps_responses(date);
   CREATE INDEX IF NOT EXISTS idx_nps_sentiment ON nps_responses(sentiment);
   CREATE INDEX IF NOT EXISTS idx_nps_platform ON nps_responses(platform);
@@ -71,13 +93,14 @@ export class LocalDB {
     customer_id?: string;
     visitor_id?: string;
     platform?: string;
+    response_group?: string;
     sentiment?: string;
     sentiment_confidence?: number;
   }) {
     const stmt = db.prepare(`
       INSERT INTO nps_responses 
-      (rating, comment, language, date, customer_id, visitor_id, platform, sentiment, sentiment_confidence)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (rating, comment, language, date, customer_id, visitor_id, platform, response_group, sentiment, sentiment_confidence)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     return stmt.run(
@@ -88,6 +111,7 @@ export class LocalDB {
       data.customer_id || null,
       data.visitor_id || null,
       data.platform || null,
+      data.response_group || null,
       data.sentiment || null,
       data.sentiment_confidence || null
     );
@@ -119,7 +143,19 @@ export class LocalDB {
     topic?: string;
   } = {}) {
     let query = `
-      SELECT r.*, 
+      SELECT r.id,
+             r.rating,
+             r.comment,
+             r.language,
+             r.date,
+             r.customer_id as customer,
+             r.visitor_id as visitorId,
+             r.platform,
+             r.response_group as responseGroup,
+             r.sentiment,
+             r.sentiment_confidence as sentimentConfidence,
+             r.created_at,
+             r.updated_at,
              GROUP_CONCAT(t.topic) as topics,
              GROUP_CONCAT(t.confidence) as topic_confidences
       FROM nps_responses r

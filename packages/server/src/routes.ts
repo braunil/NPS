@@ -130,6 +130,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let inserted = 0;
       for (const r of arr) {
         try {
+          // Calculate response group based on rating
+          const responseGroup = r.rating >= 9 ? 'Promoter' : 
+                               r.rating >= 7 ? 'Passive' : 'Detractor';
+          
           LocalDB.insertResponse({
             rating: r.rating,
             comment: r.comment,
@@ -138,6 +142,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             customer_id: r.customer,
             visitor_id: r.visitorId,
             platform: r.platform,
+            response_group: responseGroup,
             sentiment: r.sentiment || 'neutral',
             sentiment_confidence: r.sentimentConfidence || 0
           });
@@ -156,7 +161,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const data = XLSX.utils.sheet_to_json(wb.Sheets[sheet]);
       let inserted = 0;
       for (const row of data as any[]) {
-        try { LocalDB.insertResponse({ rating: row.rating, comment: row.comment, language: row.language, date: row.date, sentiment: row.sentiment }); inserted++; } catch {}
+        try { 
+          // Calculate response group based on rating
+          const responseGroup = row.rating >= 9 ? 'Promoter' : 
+                               row.rating >= 7 ? 'Passive' : 'Detractor';
+          
+          LocalDB.insertResponse({ 
+            rating: row.rating, 
+            comment: row.comment, 
+            language: row.language, 
+            date: row.date, 
+            response_group: responseGroup,
+            sentiment: row.sentiment 
+          }); 
+          inserted++; 
+        } catch {}
       }
       res.json({ message: 'File processed', inserted });
     } catch { res.status(500).json({ error: 'File upload failed' }); }
@@ -168,11 +187,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let inserted = 0;
       for (const r of parsed) { 
         try { 
+          // Calculate response group based on rating
+          const responseGroup = r.rating >= 9 ? 'Promoter' : 
+                               r.rating >= 7 ? 'Passive' : 'Detractor';
+          
           LocalDB.insertResponse({ 
             rating: r.rating, 
             comment: r.comment || '', 
             language: r.language || 'en', 
-            date: r.date || new Date().toISOString().split('T')[0]
+            date: r.date || new Date().toISOString().split('T')[0],
+            response_group: responseGroup
           }); 
           inserted++; 
         } catch {} 
